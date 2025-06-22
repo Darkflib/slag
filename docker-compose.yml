@@ -1,0 +1,13 @@
+version: '3'
+
+services:
+  slag-api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./comments:/app/comments
+      - ./main.py:/app/main.py
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
