@@ -1,4 +1,4 @@
-# SLAG Commenting
+# S.L.A.G. – Snide, Loud, And Gratuitous - Commenting System
 
 Commenting system based on storing json files in a directory structure - each comment thread is a separate json file, allowing for easy retrieval and management of comments.
 
