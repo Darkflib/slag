@@ -3,35 +3,37 @@ Tests for the SLAG Commenting System API
 """
 import shutil
 from pathlib import Path
-from uuid import UUID
+import re  # For regex matching of timestamp
+from datetime import datetime, timezone  # Added for timestamp check
+from typing import Generator
 
 import pytest
 from fastapi.testclient import TestClient
+from pytest import MonkeyPatch
 
 from main import app
 
 
 @pytest.fixture
-def client():
+def client() -> TestClient:
     """Create a test client for the FastAPI app."""
     return TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def setup_and_teardown_env(monkeypatch):
+def setup_and_teardown_env(monkeypatch: MonkeyPatch) -> Generator[None, None, None]:
     """Set up test environment before each test and clean up after."""
     base_test_dir = Path("test_temp_data")
-    
     test_data_dir = base_test_dir / "slag-data"
     test_comments_dir = test_data_dir / "comments"
     test_targets_dir = test_data_dir / "targets"
     test_flags_dir = test_data_dir / "flags"
     test_snapshot_file = test_data_dir / "snapshot.json"
-
+    
     test_comments_dir.mkdir(parents=True, exist_ok=True)
     test_targets_dir.mkdir(parents=True, exist_ok=True)
     test_flags_dir.mkdir(parents=True, exist_ok=True)
-
+    
     monkeypatch.setattr("main.DATA_DIR", test_data_dir)
     monkeypatch.setattr("main.COMMENTS_DIR", test_comments_dir)
     monkeypatch.setattr("main.TARGETS_DIR", test_targets_dir)
@@ -44,17 +46,14 @@ def setup_and_teardown_env(monkeypatch):
         shutil.rmtree(base_test_dir)
 
 
-from datetime import datetime, timezone # Added for timestamp check
-import re # For regex matching of timestamp
-
-def test_read_root(client):
+def test_read_root(client: TestClient) -> None:
     """Test the root endpoint."""
     response = client.get("/")
     assert response.status_code == 200
     assert response.json()["name"] == "SLAG Commenting API" # Adjusted to actual name
 
 
-def test_create_and_get_comment(client):
+def test_create_and_get_comment(client: TestClient) -> None:
     """Test creating and retrieving a comment."""
     target_id = "test-target-1"
     comment_input_data = {
@@ -103,78 +102,209 @@ def test_create_and_get_comment(client):
     assert collection["orderedItems"][0] == comment_id_url
 
 
-def test_update_comment(client):
+def test_update_comment(client: TestClient) -> None:
     """Test updating a comment."""
     # Create a new comment
-    page_id = "test-page-2"
-    comment_data = {
-        "author": "Test User",
-        "text": "This is a test comment."
+    target_id = "test-page-2"
+    comment_input_data = {
+        "content": "This is a test comment.",
+        "attributedTo": {
+            "id": "http://example.com/users/testuser",
+            "name": "Test User",
+            "type": "Person"
+        }
     }
     
-    response = client.post(f"/comments/{page_id}", json=comment_data)
-    comment_uuid = response.json()["uuid"]
+    # Create the initial comment
+    response = client.post(f"/comments/{target_id}", json=comment_input_data)
+    assert response.status_code == 200
+    comment_id_url = response.json()["id"]
+    ulid_id = comment_id_url.split("/")[-1]
     
     # Update the comment
     update_data = {
-        "text": "This is an updated comment."
+        "content": "This is an updated comment.",
+        "attributedTo": {
+            "id": "http://example.com/users/testuser",
+            "name": "Test User",
+            "type": "Person"
+        }
     }
     
-    response = client.put(f"/comments/{page_id}/{comment_uuid}", json=update_data)
+    response = client.patch(f"/comment/{ulid_id}", json=update_data)
     assert response.status_code == 200
-    assert response.json()["text"] == "This is an updated comment."
+    assert response.json()["content"] == "This is an updated comment."
     
     # Verify the update
-    response = client.get(f"/comments/{page_id}")
-    assert response.json()["comments"][0]["text"] == "This is an updated comment."
+    response = client.get(f"/comment/{ulid_id}")
+    assert response.status_code == 200
+    assert response.json()["content"] == "This is an updated comment."
 
 
-def test_delete_comment(client):
-    """Test deleting a comment."""
+def test_flags_comment(client: TestClient) -> None:
+    """Test setting and getting flags for a comment."""
     # Create a new comment
-    page_id = "test-page-3"
-    comment_data = {
-        "author": "Test User",
-        "text": "This comment will be deleted."
+    target_id = "test-page-3"
+    comment_input_data = {
+        "content": "This comment will be flagged.",
+        "attributedTo": {
+            "id": "http://example.com/users/testuser",
+            "name": "Test User",
+            "type": "Person"
+        }
     }
     
-    response = client.post(f"/comments/{page_id}", json=comment_data)
-    comment_uuid = response.json()["uuid"]
-    
-    # Delete the comment
-    response = client.delete(f"/comments/{page_id}/{comment_uuid}")
+    # Create the comment
+    response = client.post(f"/comments/{target_id}", json=comment_input_data)
     assert response.status_code == 200
-    assert "Comment deleted successfully" in response.json()["detail"]
+    comment_id_url = response.json()["id"]
+    ulid_id = comment_id_url.split("/")[-1]
     
-    # Verify the comment is deleted
-    response = client.get(f"/comments/{page_id}")
-    assert len(response.json()["comments"]) == 0
+    # Check initial flags (should be empty)
+    response = client.get(f"/comment/{ulid_id}/flags")
+    assert response.status_code == 200
+    assert response.json() == {}
+      # Set flags on the comment
+    flag_data = {
+        "hidden": True,
+        "reported": True
+    }
+    response = client.patch(f"/comment/{ulid_id}/flags", json=flag_data)
+    assert response.status_code == 200
+    assert response.json()["hidden"] is True
+    assert response.json()["reported"] is True
+    
+    # Verify the flags
+    response = client.get(f"/comment/{ulid_id}/flags")
+    assert response.status_code == 200
+    assert response.json()["hidden"] is True
+    assert response.json()["reported"] is True
+    
+    # Update just one flag
+    update_data = {
+        "moderated": True
+    }
+    
+    response = client.patch(f"/comment/{ulid_id}/flags", json=update_data)
+    assert response.status_code == 200
+    assert response.json()["hidden"] is True  # Unchanged
+    assert response.json()["reported"] is True  # Unchanged
+    assert response.json()["moderated"] is True  # Added
 
 
-def test_create_and_get_reply(client):
+def test_create_and_get_reply(client: TestClient) -> None:
     """Test creating and retrieving a reply to a comment."""
     # Create a parent comment
-    page_id = "test-page-4"
-    comment_data = {
-        "author": "Parent Author",
-        "text": "This is a parent comment."
+    target_id = "test-page-4"
+    comment_input_data = {
+        "content": "This is a parent comment.",
+        "attributedTo": {
+            "id": "http://example.com/users/parentuser",
+            "name": "Parent User",
+            "type": "Person"
+        }
     }
     
-    response = client.post(f"/comments/{page_id}", json=comment_data)
-    parent_uuid = response.json()["uuid"]
+    # Create the parent comment
+    response = client.post(f"/comments/{target_id}", json=comment_input_data)
+    assert response.status_code == 200
+    parent_comment = response.json()
+    parent_id_url = parent_comment["id"]
+    parent_ulid = parent_id_url.split("/")[-1]
     
     # Create a reply
-    reply_data = {
-        "author": "Reply Author",
-        "text": "This is a reply to the parent comment."
+    reply_input_data = {
+        "content": "This is a reply to the parent comment.",
+        "attributedTo": {
+            "id": "http://example.com/users/replyuser",
+            "name": "Reply User",
+            "type": "Person"
+        }
     }
     
-    response = client.post(f"/comments/{page_id}/replies/{parent_uuid}", json=reply_data)
-    assert response.status_code == 201
-    assert response.json()["parent"] == parent_uuid
-    
-    # Get the replies
-    response = client.get(f"/comments/{page_id}/replies/{parent_uuid}")
+    response = client.post(f"/comment/{parent_ulid}/reply", json=reply_input_data)
     assert response.status_code == 200
-    assert len(response.json()["replies"]) == 1
-    assert response.json()["replies"][0]["text"] == "This is a reply to the parent comment."
+    reply = response.json()
+    assert reply["inReplyTo"] == parent_id_url
+    assert reply["content"] == "This is a reply to the parent comment."
+    
+    # Get the reply by its ID
+    reply_ulid = reply["id"].split("/")[-1]
+    response = client.get(f"/comment/{reply_ulid}")
+    assert response.status_code == 200
+    retrieved_reply = response.json()
+    assert retrieved_reply["content"] == "This is a reply to the parent comment."
+    assert retrieved_reply["inReplyTo"] == parent_id_url
+    
+    # Check that both comments appear in the target's comment collection
+    response = client.get(f"/comments/{target_id}")
+    assert response.status_code == 200
+    collection = response.json()
+    assert collection["totalItems"] == 2
+    assert len(collection["orderedItems"]) == 2
+    assert parent_id_url in collection["orderedItems"]
+    assert reply["id"] in collection["orderedItems"]
+
+
+def test_admin_rebuild_index(client: TestClient) -> None:
+    """Test the admin rebuild-index endpoint."""
+    # Create two comments for different targets
+    target1_id = "test-target-rebuild-1"
+    target2_id = "test-target-rebuild-2"
+    
+    comment_input_data = {
+        "content": "Comment for target 1",
+        "attributedTo": {
+            "id": "http://example.com/users/testuser",
+            "name": "Test User",
+            "type": "Person"
+        }
+    }
+    
+    # Create comment for target 1
+    client.post(f"/comments/{target1_id}", json=comment_input_data)
+    
+    # Create comment for target 2
+    comment_input_data["content"] = "Comment for target 2"
+    client.post(f"/comments/{target2_id}", json=comment_input_data)
+    
+    # Rebuild the index
+    response = client.post("/admin/rebuild-index")
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "rebuilt"
+    assert target1_id in result["targets"]
+    assert target2_id in result["targets"]
+    
+def test_admin_snapshot(client: TestClient) -> None:
+    """Test the admin snapshot endpoint."""
+    # Create a comment and set flags
+    target_id = "test-target-snapshot"
+    comment_input_data = {
+        "content": "Comment for snapshot test",
+        "attributedTo": {
+            "id": "http://example.com/users/testuser",
+            "name": "Test User",
+            "type": "Person"
+        }
+    }
+    
+    # Create the comment
+    response = client.post(f"/comments/{target_id}", json=comment_input_data)
+    comment_id_url = response.json()["id"]
+    ulid_id = comment_id_url.split("/")[-1]
+    
+    # Set flags for the comment
+    flag_data = {
+        "hidden": True,
+        "reported": True
+    }
+    client.patch(f"/comment/{ulid_id}/flags", json=flag_data)
+    
+    # Create snapshot
+    response = client.post("/admin/snapshot")
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "snapshot created"
+    assert "file" in result
+    assert str(result["file"]).endswith("snapshot.json")
