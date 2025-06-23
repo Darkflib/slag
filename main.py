@@ -1,285 +1,223 @@
-"""
-SLAG Commenting System - FastAPI Backend
-A commenting system based on storing JSON files in a directory structure.
-"""
+from fastapi import FastAPI, HTTPException, Request, Body
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, HttpUrl, Field
+from typing import Optional, List, cast, Dict, Any, TypedDict
+from ulid import ULID
 import json
-import os
-import uuid
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from datetime import datetime
+import os
 
-from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, Field, UUID4, field_validator
-from rich import print
+app = FastAPI()
 
-# Configure application
-app = FastAPI(
-    title="SLAG Commenting System",
-    description="API for managing comments stored in JSON files",
-    version="0.1.0",
-)
+DATA_DIR = Path("slag-data")
+COMMENTS_DIR = DATA_DIR / "comments"
+TARGETS_DIR = DATA_DIR / "targets"
+FLAGS_DIR = DATA_DIR / "flags"
+SNAPSHOT_FILE = DATA_DIR / "snapshot.json"
 
-# Define the directory where comment files will be stored
-COMMENTS_DIR = Path("comments")
-COMMENTS_DIR.mkdir(exist_ok=True)
+COMMENTS_DIR.mkdir(parents=True, exist_ok=True)
+TARGETS_DIR.mkdir(parents=True, exist_ok=True)
+FLAGS_DIR.mkdir(parents=True, exist_ok=True)
 
+class Actor(BaseModel):
+    id: HttpUrl
+    name: str
+    type: str = Field("Person", json_schema_extra={"frozen": True})
 
-# Pydantic models for validation
-class CommentFlags(BaseModel):
-    hidden: bool = False
-    moderated: bool = False
-    reported: bool = False
-    deleted: bool = False
+class CommentNote(BaseModel):
+    type: str = Field("Note", frozen=True)
+    id: HttpUrl
+    content: str
+    published: Optional[datetime]
+    attributedTo: Actor
+    inReplyTo: Optional[HttpUrl] = None
+    target: HttpUrl
 
+class CommentInput(BaseModel):
+    content: str
+    attributedTo: Actor
 
-class Comment(BaseModel):
-    uuid: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    author: str
-    datetime: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
-    text: str
-    parent: Optional[str] = None
-    flags: CommentFlags = Field(default_factory=CommentFlags)
-    
-    @field_validator("datetime")
-    def validate_datetime(cls, v):
-        try:
-            datetime.fromisoformat(v.replace("Z", "+00:00"))
-            return v
-        except ValueError:
-            raise ValueError("Invalid datetime format. Must be ISO 8601 format.")
+class FlagUpdate(BaseModel):
+    hidden: Optional[bool]
+    moderated: Optional[bool]
+    reported: Optional[bool]
+    deleted: Optional[bool]
 
+@app.get("/comments/{target_id}")
+async def get_comments(target_id: str) -> dict:
+    index_file = TARGETS_DIR / f"{target_id}.index.json"
+    if not index_file.exists():
+        return {"@context": "https://www.w3.org/ns/activitystreams", "type": "OrderedCollection", "totalItems": 0, "orderedItems": []}
 
-class CommentThread(BaseModel):
-    page_id: str
-    comments: List[Comment] = []
+    with index_file.open() as f:
+        comment_ids = json.load(f)
 
-
-class CommentCreate(BaseModel):
-    author: str
-    text: str
-
-
-class CommentUpdate(BaseModel):
-    author: Optional[str] = None
-    text: Optional[str] = None
-    flags: Optional[CommentFlags] = None
-
-
-# Helper functions
-def get_comment_file_path(page_id: str) -> Path:
-    """Get the path to a comment file based on page_id."""
-    return COMMENTS_DIR / f"{page_id}.json"
-
-
-def load_comment_thread(page_id: str) -> CommentThread:
-    """Load a comment thread from a JSON file."""
-    file_path = get_comment_file_path(page_id)
-    
-    if not file_path.exists():
-        # Return an empty comment thread if the file doesn't exist
-        return CommentThread(page_id=page_id, comments=[])
-    
-    try:
-        data = json.loads(file_path.read_text())
-        return CommentThread(**data)
-    except (json.JSONDecodeError, TypeError) as e:
-        print(f"[bold red]Error loading comment thread:[/bold red] {e}")
-        # If the file is corrupted, return an empty thread
-        return CommentThread(page_id=page_id, comments=[])
-
-
-def save_comment_thread(thread: CommentThread) -> None:
-    """Save a comment thread to a JSON file."""
-    file_path = get_comment_file_path(thread.page_id)
-    file_path.write_text(thread.model_dump_json(indent=2))
-
-
-# API Endpoints
-@app.get("/")
-def read_root():
-    """Root endpoint with basic information about the API."""
     return {
-        "name": "SLAG Commenting System",
-        "version": "0.1.0",
-        "description": "API for managing comments stored in JSON files",
-        "endpoints": [
-            "GET /comments/{page_id}",
-            "POST /comments/{page_id}",
-            "PUT /comments/{page_id}/{comment_uuid}",
-            "DELETE /comments/{page_id}/{comment_uuid}",
-            "GET /comments/{page_id}/replies/{parent_uuid}",
-            "POST /comments/{page_id}/replies/{parent_uuid}",
-            "PUT /comments/{page_id}/replies/{parent_uuid}/{reply_uuid}",
-            "DELETE /comments/{page_id}/replies/{parent_uuid}/{reply_uuid}"
-        ]
+        "@context": "https://www.w3.org/ns/activitystreams",
+        "type": "OrderedCollection",
+        "id": f"https://slag.example.com/comments/{target_id}",
+        "totalItems": len(comment_ids),
+        "orderedItems": [f"https://slag.example.com/comments/{cid}" for cid in comment_ids]
     }
 
+@app.post("/comments/{target_id}", response_model=CommentNote)
+async def post_comment(target_id: str, input: CommentInput) -> CommentNote:
+    new_id = str(ULID())
+    now = datetime.utcnow().isoformat() + "Z"
+    comment_url = f"https://slag.example.com/comments/{new_id}"
 
-@app.get("/comments/{page_id}")
-def get_comments(page_id: str):
-    """Retrieve all comments for a specific page."""
-    thread = load_comment_thread(page_id)
-    # Filter out replies (comments with parent) to return only top-level comments
-    return {
-        "page_id": page_id,
-        "comments": [comment for comment in thread.comments if comment.parent is None]
+    note = CommentNote(
+        type="Note",
+        id=cast(HttpUrl, comment_url),
+        content=input.content,
+        published=datetime.fromisoformat(now[:-1]),
+        attributedTo=input.attributedTo,
+        target=cast(HttpUrl, f"https://example.com/{target_id}")
+    )
+
+    comment_file = COMMENTS_DIR / f"{new_id}.jsonld"
+    with comment_file.open("w") as f:
+        json.dump(note.dict(), f, indent=2)
+
+    index_file = TARGETS_DIR / f"{target_id}.index.json"
+    if index_file.exists():
+        with index_file.open() as f:
+            comment_ids = json.load(f)
+    else:
+        comment_ids = []
+
+    comment_ids.append(new_id)
+    with index_file.open("w") as f:
+        json.dump(comment_ids, f)
+
+    return note
+
+@app.get("/comment/{ulid_id}", response_model=CommentNote)
+async def get_comment(ulid_id: str) -> CommentNote:
+    comment_file = COMMENTS_DIR / f"{ulid_id}.jsonld"
+    if not comment_file.exists():
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    with comment_file.open() as f:
+        comment_data = json.load(f)
+        return CommentNote(**comment_data)
+
+@app.patch("/comment/{ulid_id}", response_model=CommentNote)
+async def edit_comment(ulid_id: str, input: CommentInput) -> CommentNote:
+    comment_file = COMMENTS_DIR / f"{ulid_id}.jsonld"
+    if not comment_file.exists():
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    with comment_file.open() as f:
+        comment_data = json.load(f)
+
+    comment_data['content'] = input.content
+    comment_data['attributedTo'] = input.attributedTo.dict()
+
+    with comment_file.open("w") as f:
+        json.dump(comment_data, f, indent=2)
+
+    return CommentNote(**comment_data)
+
+@app.post("/comment/{ulid_id}/reply", response_model=CommentNote)
+async def reply_to_comment(ulid_id: str, input: CommentInput) -> CommentNote:
+    parent_comment = await get_comment(ulid_id)
+    target_url = parent_comment.target
+    new_id = str(ULID())
+    now = datetime.utcnow().isoformat() + "Z"
+    comment_url = f"https://slag.example.com/comments/{new_id}"
+
+    reply = CommentNote(
+        type="Note",
+        id=cast(HttpUrl, comment_url),
+        content=input.content,
+        published=datetime.fromisoformat(now[:-1]),
+        attributedTo=input.attributedTo,
+        inReplyTo=parent_comment.id,
+        target=target_url
+    )
+
+    comment_file = COMMENTS_DIR / f"{new_id}.jsonld"
+    with comment_file.open("w") as f:
+        json.dump(reply.dict(), f, indent=2)
+
+    target_id = str(target_url).rsplit("/", 1)[-1]
+    index_file = TARGETS_DIR / f"{target_id}.index.json"
+    if index_file.exists():
+        with index_file.open() as f:
+            comment_ids = json.load(f)
+    else:
+        comment_ids = []
+
+    comment_ids.append(new_id)
+    with index_file.open("w") as f:
+        json.dump(comment_ids, f)
+
+    return reply
+
+@app.get("/comment/{ulid_id}/flags")
+async def get_flags(ulid_id: str) -> Any:
+    flag_file = FLAGS_DIR / f"{ulid_id}.flags.json"
+    if not flag_file.exists():
+        return {}
+
+    with flag_file.open() as f:
+        return json.load(f)
+
+@app.patch("/comment/{ulid_id}/flags")
+async def update_flags(ulid_id: str, flags: FlagUpdate) -> dict:
+    flag_file = FLAGS_DIR / f"{ulid_id}.flags.json"
+    existing_flags = {}
+    if flag_file.exists():
+        with flag_file.open() as f:
+            existing_flags = json.load(f)
+
+    updated_flags = {**existing_flags, **{k: v for k, v in flags.dict().items() if v is not None}}
+
+    with flag_file.open("w") as f:
+        json.dump(updated_flags, f, indent=2)
+
+    return updated_flags
+
+@app.post("/admin/rebuild-index")
+async def rebuild_index() -> dict:
+    index: Dict[str, List[str]] = {}
+    for comment_file in COMMENTS_DIR.glob("*.jsonld"):
+        with comment_file.open() as f:
+            comment = json.load(f)
+            target_id = comment['target'].rsplit("/", 1)[-1]
+            ulid_id = comment_file.stem
+            index.setdefault(target_id, []).append(ulid_id)
+
+    for target_id, ulid_list in index.items():
+        index_file = TARGETS_DIR / f"{target_id}.index.json"
+        with index_file.open("w") as f:
+            json.dump(sorted(ulid_list), f)
+
+    return {"status": "rebuilt", "targets": list(index.keys())}
+
+
+class SnapshotData(TypedDict):
+    indexes: Dict[str, List[str]]
+    flags: Dict[str, Dict[str, Any]]
+
+@app.post("/admin/snapshot")
+async def snapshot() -> dict:
+    snapshot_data: SnapshotData = {
+        "indexes": {},
+        "flags": {}
     }
 
+    for index_file in TARGETS_DIR.glob("*.index.json"):
+        with index_file.open() as f:
+            snapshot_data["indexes"][index_file.stem] = json.load(f)
 
-@app.post("/comments/{page_id}", status_code=status.HTTP_201_CREATED)
-def create_comment(page_id: str, comment_data: CommentCreate):
-    """Create a new comment on a specific page."""
-    thread = load_comment_thread(page_id)
-    
-    # Create a new comment
-    new_comment = Comment(
-        author=comment_data.author,
-        text=comment_data.text
-    )
-    
-    thread.comments.append(new_comment)
-    save_comment_thread(thread)
-    
-    return new_comment
+    for flag_file in FLAGS_DIR.glob("*.flags.json"):
+        with flag_file.open() as f:
+            snapshot_data["flags"][flag_file.stem] = json.load(f)
 
+    with SNAPSHOT_FILE.open("w") as f:
+        json.dump(snapshot_data, f, indent=2, sort_keys=True)
 
-@app.put("/comments/{page_id}/{comment_uuid}")
-def update_comment(page_id: str, comment_uuid: str, comment_data: CommentUpdate):
-    """Update an existing comment."""
-    thread = load_comment_thread(page_id)
-    
-    # Find the comment
-    for i, comment in enumerate(thread.comments):
-        if comment.uuid == comment_uuid:
-            # Update the comment fields
-            if comment_data.author is not None:
-                comment.author = comment_data.author
-            if comment_data.text is not None:
-                comment.text = comment_data.text
-            if comment_data.flags is not None:
-                comment.flags = comment_data.flags
-            
-            thread.comments[i] = comment
-            save_comment_thread(thread)
-            return comment
-    
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Comment with UUID {comment_uuid} not found"
-    )
-
-
-@app.delete("/comments/{page_id}/{comment_uuid}")
-def delete_comment(page_id: str, comment_uuid: str):
-    """Delete a comment by UUID."""
-    thread = load_comment_thread(page_id)
-    
-    # Find the comment
-    for i, comment in enumerate(thread.comments):
-        if comment.uuid == comment_uuid:
-            # Remove the comment
-            deleted_comment = thread.comments.pop(i)
-            
-            # Also remove any replies to this comment
-            thread.comments = [c for c in thread.comments if c.parent != comment_uuid]
-            
-            save_comment_thread(thread)
-            return {"detail": "Comment deleted successfully", "comment": deleted_comment}
-    
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Comment with UUID {comment_uuid} not found"
-    )
-
-
-@app.get("/comments/{page_id}/replies/{parent_uuid}")
-def get_replies(page_id: str, parent_uuid: str):
-    """Retrieve all replies to a specific comment."""
-    thread = load_comment_thread(page_id)
-    
-    # Filter out only replies to the specified parent
-    replies = [comment for comment in thread.comments if comment.parent == parent_uuid]
-    
-    return {
-        "page_id": page_id,
-        "parent_uuid": parent_uuid,
-        "replies": replies
-    }
-
-
-@app.post("/comments/{page_id}/replies/{parent_uuid}", status_code=status.HTTP_201_CREATED)
-def create_reply(page_id: str, parent_uuid: str, comment_data: CommentCreate):
-    """Create a new reply to a specific comment."""
-    thread = load_comment_thread(page_id)
-    
-    # Check if parent comment exists
-    parent_exists = any(comment.uuid == parent_uuid for comment in thread.comments)
-    if not parent_exists:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Parent comment with UUID {parent_uuid} not found"
-        )
-    
-    # Create a new reply
-    new_reply = Comment(
-        author=comment_data.author,
-        text=comment_data.text,
-        parent=parent_uuid
-    )
-    
-    thread.comments.append(new_reply)
-    save_comment_thread(thread)
-    
-    return new_reply
-
-
-@app.put("/comments/{page_id}/replies/{parent_uuid}/{reply_uuid}")
-def update_reply(page_id: str, parent_uuid: str, reply_uuid: str, comment_data: CommentUpdate):
-    """Update an existing reply."""
-    thread = load_comment_thread(page_id)
-    
-    # Find the reply
-    for i, comment in enumerate(thread.comments):
-        if comment.uuid == reply_uuid and comment.parent == parent_uuid:
-            # Update the reply fields
-            if comment_data.author is not None:
-                comment.author = comment_data.author
-            if comment_data.text is not None:
-                comment.text = comment_data.text
-            if comment_data.flags is not None:
-                comment.flags = comment_data.flags
-            
-            thread.comments[i] = comment
-            save_comment_thread(thread)
-            return comment
-    
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Reply with UUID {reply_uuid} not found for parent {parent_uuid}"
-    )
-
-
-@app.delete("/comments/{page_id}/replies/{parent_uuid}/{reply_uuid}")
-def delete_reply(page_id: str, parent_uuid: str, reply_uuid: str):
-    """Delete a reply by UUID."""
-    thread = load_comment_thread(page_id)
-    
-    # Find the reply
-    for i, comment in enumerate(thread.comments):
-        if comment.uuid == reply_uuid and comment.parent == parent_uuid:
-            # Remove the reply
-            deleted_reply = thread.comments.pop(i)
-            save_comment_thread(thread)
-            return {"detail": "Reply deleted successfully", "reply": deleted_reply}
-    
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Reply with UUID {reply_uuid} not found for parent {parent_uuid}"
-    )
-
-
-if __name__ == "__main__":
-    import uvicorn
-    print("[bold green]Starting SLAG Commenting System[/bold green]")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    return {"status": "snapshot created", "file": str(SNAPSHOT_FILE)}
