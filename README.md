@@ -73,6 +73,21 @@ Each comment follows the AS2 `Note` format:
 
 ---
 
+## ⚙️ Configuration
+
+Configuration is handled via environment variables or a `.env` file:
+
+```bash
+# Base URL for comments (no trailing slash)
+COMMENTS_BASE_URL=https://slag.example.com/comments
+# Base URL for target resources (no trailing slash)
+TARGET_BASE_URL=https://example.com
+```
+
+An example configuration file is provided as `.env.example`.
+
+---
+
 ## 🚀 Running the App
 
 ```bash

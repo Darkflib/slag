@@ -1,13 +1,25 @@
-from fastapi import FastAPI, HTTPException, Request, Body
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl, Field
 from typing import Optional, List, cast, Dict, Any, TypedDict
 from ulid import ULID
 import json
 from pathlib import Path
 from datetime import datetime, timezone
-import os
 import importlib.metadata
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    """Application settings."""
+    COMMENTS_BASE_URL: str = "https://slag.example.com/comments"
+    TARGET_BASE_URL: str = "https://example.com"
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        case_sensitive = True
+
+# Load settings
+settings = Settings()
 
 app = FastAPI()
 
@@ -62,16 +74,16 @@ async def get_comments(target_id: str) -> dict:
     index_file = TARGETS_DIR / f"{target_id}.index.json"
     if not index_file.exists():
         return {"@context": "https://www.w3.org/ns/activitystreams", "type": "OrderedCollection", "totalItems": 0, "orderedItems": []}
-
+        
     with index_file.open() as f:
         comment_ids = json.load(f)
-
+        
     return {
         "@context": "https://www.w3.org/ns/activitystreams",
         "type": "OrderedCollection",
-        "id": f"https://slag.example.com/comments/{target_id}",
+        "id": f"{settings.COMMENTS_BASE_URL}/{target_id}",
         "totalItems": len(comment_ids),
-        "orderedItems": [f"https://slag.example.com/comments/{cid}" for cid in comment_ids]
+        "orderedItems": [f"{settings.COMMENTS_BASE_URL}/{cid}" for cid in comment_ids]
     }
 
 @app.post("/comments/{target_id}", response_model=CommentNote)
@@ -88,7 +100,7 @@ async def post_comment(target_id: str, input: CommentInput) -> CommentNote:
     """
     new_id = str(ULID())
     now_dt = datetime.now(timezone.utc)
-    comment_url = f"https://slag.example.com/comments/{new_id}"
+    comment_url = f"{settings.COMMENTS_BASE_URL}/{new_id}"
 
     note = CommentNote(
         type="Note",
@@ -96,7 +108,7 @@ async def post_comment(target_id: str, input: CommentInput) -> CommentNote:
         content=input.content,
         published=now_dt,
         attributedTo=input.attributedTo,
-        target=cast(HttpUrl, f"https://example.com/{target_id}")
+        target=cast(HttpUrl, f"{settings.TARGET_BASE_URL}/{target_id}")
     )
 
     comment_data = note.model_dump(mode='json')
@@ -191,7 +203,7 @@ async def reply_to_comment(ulid_id: str, input: CommentInput) -> CommentNote:
     target_url = parent_comment.target
     new_id = str(ULID())
     now_dt = datetime.now(timezone.utc)
-    comment_url = f"https://slag.example.com/comments/{new_id}"
+    comment_url = f"{settings.COMMENTS_BASE_URL}/{new_id}"
 
     reply = CommentNote(
         type="Note",

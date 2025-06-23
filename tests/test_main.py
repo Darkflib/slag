@@ -159,15 +159,17 @@ def test_flags_comment(client: TestClient) -> None:
     assert response.status_code == 200
     comment_id_url = response.json()["id"]
     ulid_id = comment_id_url.split("/")[-1]
-    
-    # Check initial flags (should be empty)
+      # Check initial flags (should be empty)
     response = client.get(f"/comment/{ulid_id}/flags")
     assert response.status_code == 200
     assert response.json() == {}
-      # Set flags on the comment
+    
+    # Set flags on the comment
     flag_data = {
         "hidden": True,
-        "reported": True
+        "reported": True,
+        "moderated": None,
+        "deleted": None
     }
     response = client.patch(f"/comment/{ulid_id}/flags", json=flag_data)
     assert response.status_code == 200
@@ -179,10 +181,12 @@ def test_flags_comment(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.json()["hidden"] is True
     assert response.json()["reported"] is True
-    
-    # Update just one flag
+      # Update just one flag
     update_data = {
-        "moderated": True
+        "moderated": True,
+        "hidden": None,
+        "reported": None,
+        "deleted": None
     }
     
     response = client.patch(f"/comment/{ulid_id}/flags", json=update_data)
