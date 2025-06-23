@@ -8,6 +8,7 @@ SLAG is a lightweight commenting system that stores each comment as a standalone
 - Page-level indexes map target pages (e.g. articles) to lists of ULIDs.
 - Comments use [ActivityStreams 2.0](https://www.w3.org/TR/activitystreams-core/) `Note` format for future interoperability.
 - Moderation metadata (e.g. hidden/reported) is stored in separate `.flags.json` files.
+- Robust error handling for file operations with appropriate HTTP responses.
 
 ## 📂 File Structure
 
@@ -70,6 +71,13 @@ Each comment follows the AS2 `Note` format:
 |--------|---------------------------------------|----------------------------------------|
 | `POST` | `/admin/rebuild-index`                | Rebuild indexes from stored comments   |
 | `POST` | `/admin/snapshot`                     | Export all index/flag state to snapshot|
+
+### Error Handling
+
+All endpoints that perform file operations include robust error handling:
+
+- `404 Not Found`: When a requested comment, flag, or resource doesn't exist
+- `500 Internal Server Error`: For file I/O errors or JSON parsing issues, with descriptive error messages
 
 ---
 
