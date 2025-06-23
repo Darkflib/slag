@@ -7,8 +7,15 @@ import json
 from pathlib import Path
 from datetime import datetime
 import os
+import importlib.metadata
 
 app = FastAPI()
+
+# Get version from pyproject.toml
+try:
+    __version__ = importlib.metadata.version("slag-commenting")
+except importlib.metadata.PackageNotFoundError:
+    __version__ = "0.0.0-dev"
 
 DATA_DIR = Path("slag-data")
 COMMENTS_DIR = DATA_DIR / "comments"
@@ -221,3 +228,26 @@ async def snapshot() -> dict:
         json.dump(snapshot_data, f, indent=2, sort_keys=True)
 
     return {"status": "snapshot created", "file": str(SNAPSHOT_FILE)}
+
+@app.get("/")
+async def root() -> dict:
+    """
+    Return information about the SLAG Commenting API including its version.
+    """
+    return {
+        "name": "SLAG Commenting API",
+        "docs": "https://slag.example.com/docs",
+        "version": __version__,
+        "description": "A simple commenting system with support for ActivityStreams",
+        "endpoints": {
+            "root": "/",
+            "comments": "/comments/{target_id}",
+            "comment": "/comment/{ulid_id}",
+            "reply": "/comment/{ulid_id}/reply",
+            "flags": "/comment/{ulid_id}/flags",
+            "admin": {
+                "rebuild-index": "/admin/rebuild-index",
+                "snapshot": "/admin/snapshot"
+            }
+        }
+    }
