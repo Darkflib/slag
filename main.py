@@ -5,7 +5,7 @@ from typing import Optional, List, cast, Dict, Any, TypedDict
 from ulid import ULID
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import importlib.metadata
 
@@ -87,21 +87,29 @@ async def post_comment(target_id: str, input: CommentInput) -> CommentNote:
         CommentNote: The created comment note object, including its unique ID and metadata.
     """
     new_id = str(ULID())
-    now = datetime.utcnow().isoformat() + "Z"
+    now_dt = datetime.now(timezone.utc)
     comment_url = f"https://slag.example.com/comments/{new_id}"
 
     note = CommentNote(
         type="Note",
         id=cast(HttpUrl, comment_url),
         content=input.content,
-        published=datetime.fromisoformat(now[:-1]),
+        published=now_dt,
         attributedTo=input.attributedTo,
         target=cast(HttpUrl, f"https://example.com/{target_id}")
     )
 
+    comment_data = note.model_dump(mode='json')
+    # Ensure 'Z' suffix for UTC, as per requirement
+    if now_dt.tzinfo == timezone.utc:
+        comment_data['published'] = now_dt.isoformat(timespec='microseconds').replace('+00:00', 'Z')
+    else:
+        comment_data['published'] = now_dt.isoformat(timespec='microseconds')
+
+
     comment_file = COMMENTS_DIR / f"{new_id}.jsonld"
     with comment_file.open("w") as f:
-        json.dump(note.dict(), f, indent=2)
+        json.dump(comment_data, f, indent=2)
 
     index_file = TARGETS_DIR / f"{target_id}.index.json"
     if index_file.exists():
@@ -160,7 +168,7 @@ async def edit_comment(ulid_id: str, input: CommentInput) -> CommentNote:
         comment_data = json.load(f)
 
     comment_data['content'] = input.content
-    comment_data['attributedTo'] = input.attributedTo.dict()
+    comment_data['attributedTo'] = input.attributedTo.model_dump(mode='json')
 
     with comment_file.open("w") as f:
         json.dump(comment_data, f, indent=2)
@@ -182,22 +190,29 @@ async def reply_to_comment(ulid_id: str, input: CommentInput) -> CommentNote:
     parent_comment = await get_comment(ulid_id)
     target_url = parent_comment.target
     new_id = str(ULID())
-    now = datetime.utcnow().isoformat() + "Z"
+    now_dt = datetime.now(timezone.utc)
     comment_url = f"https://slag.example.com/comments/{new_id}"
 
     reply = CommentNote(
         type="Note",
         id=cast(HttpUrl, comment_url),
         content=input.content,
-        published=datetime.fromisoformat(now[:-1]),
+        published=now_dt,
         attributedTo=input.attributedTo,
         inReplyTo=parent_comment.id,
         target=target_url
     )
 
+    comment_data = reply.model_dump(mode='json')
+    # Ensure 'Z' suffix for UTC, as per requirement
+    if now_dt.tzinfo == timezone.utc:
+        comment_data['published'] = now_dt.isoformat(timespec='microseconds').replace('+00:00', 'Z')
+    else:
+        comment_data['published'] = now_dt.isoformat(timespec='microseconds')
+
     comment_file = COMMENTS_DIR / f"{new_id}.jsonld"
     with comment_file.open("w") as f:
-        json.dump(reply.dict(), f, indent=2)
+        json.dump(comment_data, f, indent=2)
 
     target_id = str(target_url).rsplit("/", 1)[-1]
     index_file = TARGETS_DIR / f"{target_id}.index.json"
@@ -245,7 +260,7 @@ async def update_flags(ulid_id: str, flags: FlagUpdate) -> dict:
         with flag_file.open() as f:
             existing_flags = json.load(f)
 
-    updated_flags = {**existing_flags, **{k: v for k, v in flags.dict().items() if v is not None}}
+    updated_flags = {**existing_flags, **{k: v for k, v in flags.model_dump(mode='json').items() if v is not None}}
 
     with flag_file.open("w") as f:
         json.dump(updated_flags, f, indent=2)
